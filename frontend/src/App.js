@@ -5,10 +5,6 @@ import { LoadingScreen } from './components/ui/AppStates';
 import { env } from './config/env';
 import './App.css';
 import { explainAvailability, isPastInterval, normalizeRpcError } from './domain/timetable';
-import { demoBookings, demoRooms as sampleRooms, demoTimetable } from './domain/demoData';
-
-const demoRooms = [];
-
 const INVALID_DATE = 'Unavailable';
 const isValidDate = (value) => value instanceof Date && !Number.isNaN(value.getTime());
 const parseDate = (value) => { const date = value instanceof Date ? value : new Date(value); return isValidDate(date) ? date : null; };
@@ -31,9 +27,8 @@ const nav = [
 
 function App() {
   const { session, loading, signOut } = useAuth();
-  const [demoMode, setDemoMode] = useState(false);
   const [page, setPage] = useState('overview');
-  const [rooms, setRooms] = useState(demoRooms);
+  const [rooms, setRooms] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [showBooking, setShowBooking] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState(null);
@@ -53,9 +48,9 @@ function App() {
   const [policy, setPolicy] = useState({ timezone: DEFAULT_CAMPUS_TIMEZONE, operating_days: [1, 2, 3, 4, 5], normal_submission_open_time: '09:00:00', normal_submission_close_time: '14:00:00', normal_horizon_days: 30, eligible_roles: ['event_organizer', 'admin'] });
 
   useEffect(() => {
-    if (!session || demoMode) return;
+    if (!session) return;
     loadData();
-  }, [session, demoMode]);
+  }, [session]);
 
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 3200); return () => clearTimeout(timer); } }, [toast]);
 
@@ -85,16 +80,6 @@ function App() {
     if (policyResult.data) setPolicy(policyResult.data);
   }
 
-  function startDemo() {
-    setRooms(sampleRooms);
-    setBookings(demoBookings);
-    setTimetableEntries(demoTimetable);
-    setRole('faculty');
-    setPolicy({ timezone: 'Asia/Kolkata', operating_days: [1, 2, 3, 4, 5, 6], normal_submission_open_time: '00:00:00', normal_submission_close_time: '23:59:00', normal_horizon_days: 30, eligible_roles: ['event_organizer', 'admin'] });
-    setDataError('');
-    setDemoMode(true);
-  }
-
   async function authenticate(event) {
     event.preventDefault(); setAuthBusy(true); setAuthError('');
     const action = authMode === 'signin' ? supabase.auth.signInWithPassword(authForm) : supabase.auth.signUp({ ...authForm, options: { emailRedirectTo: env.authRedirectUrl || window.location.origin + '/auth/callback' } });
@@ -114,18 +99,11 @@ function App() {
     if (!isValidDate(start) || !isValidDate(end)) return setToast('Choose a valid date and time interval.');
     if (end <= start) return setToast('End time must be after the start time.');
     if (isPastInterval(start)) return setToast('Choose a future campus-local date and period.');
-    if ((!session && !demoMode) || !form.room) return setToast('Choose a room before confirming.');
+    if (!session || !form.room) return setToast('Choose a room before confirming.');
     const availabilityEvidence = explainAvailability(form.room, start, end, bookings, timetableEntries, closures);
     if (!availabilityEvidence.available) return setToast(normalizeRpcError({ message: availabilityEvidence.reason }).message);
-    if (form.category === 'normal' && !demoMode) { const local = new Intl.DateTimeFormat('en-US', { timeZone: safeTimeZone(policy.timezone), weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()); const parts = local.reduce((acc, item) => ({ ...acc, [item.type]: item.value }), {}); const day = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(parts.weekday); const minute = Number(parts.hour) * 60 + Number(parts.minute); const [oh, om] = (policy.normal_submission_open_time || '09:00').split(':').map(Number); const [ch, cm] = (policy.normal_submission_close_time || '14:00').split(':').map(Number); if (!(policy.operating_days || [1,2,3,4,5]).includes(day) || minute < oh * 60 + om || minute >= ch * 60 + cm) return setToast('Normal booking submissions are currently closed. Room information remains available.'); }
+    if (form.category === 'normal') { const local = new Intl.DateTimeFormat('en-US', { timeZone: safeTimeZone(policy.timezone), weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()); const parts = local.reduce((acc, item) => ({ ...acc, [item.type]: item.value }), {}); const day = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(parts.weekday); const minute = Number(parts.hour) * 60 + Number(parts.minute); const [oh, om] = (policy.normal_submission_open_time || '09:00').split(':').map(Number); const [ch, cm] = (policy.normal_submission_close_time || '14:00').split(':').map(Number); if (!(policy.operating_days || [1,2,3,4,5]).includes(day) || minute < oh * 60 + om || minute >= ch * 60 + cm) return setToast('Normal booking submissions are currently closed. Room information remains available.'); }
     const roomId = form.room;
-    if (demoMode) {
-      const collision = bookings.some((booking) => booking.room_id === roomId && ['confirmed', 'checked_in'].includes(booking.status) && new Date(booking.starts_at) < end && new Date(booking.ends_at) > start);
-      if (collision) return setToast('That room is already reserved for this window. Try a different time or room.');
-      const booking = { id: `demo-${crypto.randomUUID()}`, room_id: roomId, user_id: 'demo-user', title: form.title.trim(), purpose: form.purpose.trim(), starts_at: start.toISOString(), ends_at: end.toISOString(), status: 'confirmed', booking_type: form.category || 'normal', confirmation_code: Math.random().toString(36).slice(2, 8).toUpperCase(), created_at: new Date().toISOString() };
-      setBookings((current) => [...current, booking].sort((left, right) => new Date(left.starts_at) - new Date(right.starts_at)));
-      setShowBooking(false); setToast(`Demo reservation confirmed · ${booking.confirmation_code}`); setPage('bookings'); return;
-    }
     if (form.category === 'event' && (role === 'event_organizer' || role === 'admin') && bookingMode === 'priority') {
       const { data, error } = await supabase.rpc('reserve_booking', { p_room_id: roomId, p_title: form.title.trim(), p_purpose: form.purpose.trim(), p_starts_at: start.toISOString(), p_ends_at: end.toISOString(), p_booking_type: 'priority' });
       if (error) return setToast(error.message === 'priority_unavailable' ? 'No eligible priority allocation covers that interval.' : error.message === 'priority_not_eligible' ? 'Your role cannot claim priority inventory.' : 'Could not confirm the priority reservation.');
@@ -149,7 +127,6 @@ function App() {
   }
 
   async function cancelBooking(booking) {
-    if (demoMode) { setBookings((current) => current.map((item) => item.id === booking.id ? { ...item, status: 'cancelled' } : item)); setToast('Demo reservation cancelled.'); return; }
     if (!window.confirm(`Cancel the reservation for ${booking.title}?`)) return;
     const { error } = await supabase.from('bookings').update({ status: 'cancelled' }).eq('id', booking.id).eq('user_id', session.user.id);
     if (error) return setToast('Could not cancel this reservation.');
@@ -158,14 +135,13 @@ function App() {
 
   async function checkIn(code) {
     if (!code.trim()) return setToast('Enter your confirmation code.');
-    if (demoMode) { const match = bookings.find((booking) => booking.confirmation_code?.toLowerCase() === code.trim().toLowerCase() && booking.user_id === 'demo-user' && booking.status === 'confirmed'); if (!match) return setToast('No active demo reservation matches that confirmation code.'); setBookings((current) => current.map((booking) => booking.id === match.id ? { ...booking, status: 'checked_in', checked_in_at: new Date().toISOString() } : booking)); setToast(`Checked in successfully: ${match.confirmation_code}.`); return; }
     const { data, error } = await supabase.rpc('check_in_booking', { p_code: code.trim() });
     if (error) { const messages = { checkin_not_authorized: 'That code does not belong to your account.', already_checked_in: 'This reservation is already checked in.', booking_not_active: 'This reservation is no longer active.', checkin_outside_window: 'Check-in opens 15 minutes before your reservation and closes when it ends.' }; return setToast(messages[error.message] || 'Check-in could not be completed.'); }
     setBookings((current) => current.map((b) => b.id === data.id ? data : b)); setToast(`Checked in successfully: ${data.confirmation_code}. The room is now occupied.`);
   }
 
   if (loading) return <LoadingScreen />;
-  if (!session && !demoMode) return <AuthScreen onDemo={startDemo} mode={authMode} setMode={setAuthMode} form={authForm} setForm={setAuthForm} onSubmit={authenticate} busy={authBusy} error={authError} />;
+  if (!session) return <AuthScreen mode={authMode} setMode={setAuthMode} form={authForm} setForm={setAuthForm} onSubmit={authenticate} busy={authBusy} error={authError} />;
 
   const activeBookings = bookings.filter((b) => b.status !== 'cancelled');
   const isAdmin = role === 'admin';
@@ -176,11 +152,11 @@ function App() {
       <div className="brand"><span className="brand-mark">N</span><span>northstar</span></div>
       <div className="workspace"><span className="workspace-dot" /> <span>Campus operations</span><span className="chevron">⌄</span></div>
       <nav>{visibleNav.map(([id, label, icon]) => <button className={page === id ? 'nav-item active' : 'nav-item'} onClick={() => setPage(id)} key={id}><span>{icon}</span>{label}{id === 'bookings' && activeBookings.length > 0 && <b>{activeBookings.length}</b>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="help-card"><span className="spark">✦</span><strong>Need a hand?</strong><p>Read the quick start guide or contact your campus admin.</p><a href="mailto:campus-admin@example.edu?subject=Northstar%20help">Contact campus admin ↗</a></div><button className="profile-button" onClick={() => { if (demoMode) { setDemoMode(false); setRooms([]); setBookings([]); setTimetableEntries([]); } else signOut(); }}><span className="avatar">{demoMode ? 'D' : (session.user.email || 'U')[0].toUpperCase()}</span><span><strong>{demoMode ? 'Demo faculty' : session.user.email?.split('@')[0]}</strong><small>{demoMode ? 'Exit demo' : 'Sign out'}</small></span><span className="more">•••</span></button></div>
+      <div className="sidebar-bottom"><div className="help-card"><span className="spark">✦</span><strong>Need a hand?</strong><p>Read the quick start guide or contact your campus admin.</p><a href="mailto:campus-admin@example.edu?subject=Northstar%20help">Contact campus admin ↗</a></div><button className="profile-button" onClick={signOut}><span className="avatar">{(session.user.email || 'U')[0].toUpperCase()}</span><span><strong>{session.user.email?.split('@')[0]}</strong><small>Sign out</small></span><span className="more">•••</span></button></div>
     </aside>
-    <main className="main">{demoMode && <div className="demo-banner"><strong>Interactive demo</strong><span>Changes are temporary and reset when you exit.</span><button onClick={() => { setDemoMode(false); setRooms([]); setBookings([]); setTimetableEntries([]); }}>Exit demo</button></div>}<header><div><p className="eyebrow">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p><h1>{page === 'overview' ? 'Good morning' : nav.find((n) => n[0] === page)?.[1]}</h1></div></header>
+    <main className="main"><header><div><p className="eyebrow">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p><h1>{page === 'overview' ? 'Good morning' : nav.find((n) => n[0] === page)?.[1]}</h1></div></header>
       {dataError && <div className="data-error" role="alert">{dataError} <button onClick={loadData}>Try again</button></div>}
-      {page === 'book' && <BookingWorkspace rooms={rooms} bookings={activeBookings} timetableEntries={timetableEntries} closures={closures} allocations={allocations} role={role} policy={policy} demoMode={demoMode} mode={bookingMode} setMode={setBookingMode} preferredRoom={selectedRoom} onReserve={(room, selection) => { setSelectedRoom(room); setBookingSelection(selection); setShowBooking(true); }} />}
+      {page === 'book' && <BookingWorkspace rooms={rooms} bookings={activeBookings} timetableEntries={timetableEntries} closures={closures} allocations={allocations} role={role} policy={policy} mode={bookingMode} setMode={setBookingMode} preferredRoom={selectedRoom} onReserve={(room, selection) => { setSelectedRoom(room); setBookingSelection(selection); setShowBooking(true); }} />}
       {page === 'overview' && <Overview rooms={rooms} bookings={activeBookings} onReserve={openBookingWorkspace} onCheckIn={checkIn} />}
       {page === 'rooms' && <Rooms rooms={rooms} bookings={activeBookings} onReserve={openBookingWorkspace} onNavigate={setPage} />}
       {page === 'bookings' && <Bookings bookings={bookings} rooms={rooms} onCancel={cancelBooking} onCheckIn={checkIn} />}
@@ -195,7 +171,7 @@ function App() {
   </div>;
 }
 
-function AuthScreen({ mode, setMode, form, setForm, onSubmit, busy, error, onDemo }) { return <div className="auth-screen"><div className="auth-panel"><div className="brand"><span className="brand-mark">N</span><span>northstar</span></div><div className="auth-copy"><p className="eyebrow">CAMPUS OPERATIONS</p><h1>Make every room<br /><em>work harder.</em></h1><p>One calm place to find, reserve, and activate the spaces your campus depends on.</p></div><div className="auth-note"><span>↗</span><div><strong>Designed for the in-between moments</strong><p>From a last-minute tutorial to a packed week of labs.</p></div></div></div><form className="auth-form" onSubmit={onSubmit}><p className="eyebrow">WELCOME BACK</p><h2>{mode === 'signin' ? 'Sign in to Northstar' : 'Create your account'}</h2><p className="muted">{mode === 'signin' ? 'Your campus, in one view.' : 'Use your campus email to get started.'}</p><label>Email<input type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="you@university.edu" /></label><label>Password<input type="password" minLength="6" required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="••••••••" /></label>{error && <div className={error.startsWith('Check') ? 'auth-success' : 'auth-error'}>{error}</div>}<button className="primary-button full" disabled={busy}>{busy ? 'Working…' : mode === 'signin' ? 'Continue →' : 'Create account →'}</button><button type="button" className="demo-launch-button" onClick={onDemo}>Explore the interactive demo →</button><p className="switch-auth">{mode === 'signin' ? 'New to Northstar?' : 'Already have an account?'} <button type="button" onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}>{mode === 'signin' ? 'Create an account' : 'Sign in'}</button></p></form></div> }
+function AuthScreen({ mode, setMode, form, setForm, onSubmit, busy, error }) { return <div className="auth-screen"><div className="auth-panel"><div className="brand"><span className="brand-mark">N</span><span>northstar</span></div><div className="auth-copy"><p className="eyebrow">CAMPUS OPERATIONS</p><h1>Make every room<br /><em>work harder.</em></h1><p>One calm place to find, reserve, and activate the spaces your campus depends on.</p></div><div className="auth-note"><span>↗</span><div><strong>Designed for the in-between moments</strong><p>From a last-minute tutorial to a packed week of labs.</p></div></div></div><form className="auth-form" onSubmit={onSubmit}><p className="eyebrow">WELCOME BACK</p><h2>{mode === 'signin' ? 'Sign in to Northstar' : 'Create your account'}</h2><p className="muted">{mode === 'signin' ? 'Your campus, in one view.' : 'Use your campus email to get started.'}</p><label>Email<input type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="you@university.edu" /></label><label>Password<input type="password" minLength="6" required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="••••••••" /></label>{error && <div className={error.startsWith('Check') ? 'auth-success' : 'auth-error'}>{error}</div>}<button className="primary-button full" disabled={busy}>{busy ? 'Working…' : mode === 'signin' ? 'Continue →' : 'Create account →'}</button><p className="switch-auth">{mode === 'signin' ? 'New to Northstar?' : 'Already have an account?'} <button type="button" onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}>{mode === 'signin' ? 'Create an account' : 'Sign in'}</button></p></form></div> }
 
 function Overview({ rooms, bookings, onReserve }) { const today = bookings.filter((b) => new Date(b.starts_at).toDateString() === new Date().toDateString()); const occupied = rooms.filter((room) => bookings.some((booking) => booking.room_id === room.id && ['confirmed', 'checked_in'].includes(booking.status) && new Date(booking.starts_at) <= new Date() && new Date(booking.ends_at) > new Date())).length; const available = Math.max(rooms.length - occupied, 0); return <section className="page-content overview-page"><div className="overview-topline"><div><p className="eyebrow">CAMPUS OPERATIONS / TODAY</p><h2>Make space for what&apos;s next.</h2><p className="lead">See the live room picture, then choose a time only when you are ready to book.</p></div><button className="primary-button" onClick={() => onReserve(null)}>Book a room <span>→</span></button></div><div className="overview-stats"><div><strong>{available}</strong><span>Free now</span></div><div><strong>{occupied}</strong><span>In use</span></div><div><strong>{today.length}</strong><span>Your bookings today</span></div></div><div className="overview-grid"><section className="overview-panel room-status-panel"><div className="panel-heading"><div><p className="eyebrow">LIVE ROOM STATUS</p><h3>What is available now</h3></div><button className="text-button" onClick={() => onReserve(rooms[0])}>Find a room →</button></div><div className="status-list">{rooms.slice(0, 5).map((room, index) => { const isOccupied = bookings.some((booking) => booking.room_id === room.id && ['confirmed', 'checked_in'].includes(booking.status) && new Date(booking.starts_at) <= new Date() && new Date(booking.ends_at) > new Date()); return <div className="status-row" key={room.id}><span className={isOccupied ? 'state-dot occupied' : 'state-dot'} /><div><strong>{room.code} · {room.name}</strong><small>{room.building} · Floor {room.floor} · {room.capacity} seats</small></div><span className={isOccupied ? 'row-status occupied-text' : 'row-status'}>{isOccupied ? 'In use' : 'Free'}</span></div> })}</div></section><section className="overview-panel schedule-panel"><div className="panel-heading"><div><p className="eyebrow">YOUR DAY</p><h3>Upcoming bookings</h3></div><span className="muted">{today.length} today</span></div>{today.length ? today.slice(0, 4).map((booking) => <ScheduleRow key={booking.id} booking={booking} room={rooms.find((room) => room.id === booking.room_id)} />) : <div className="empty-row"><span className="empty-icon">◷</span><div><strong>No bookings today</strong><p>Your schedule is clear.</p></div></div>}</section></div></section> }
 
@@ -255,7 +231,7 @@ function PeriodBookingPage({ rooms, bookings, closures, allocations, role, polic
 
 const CAMPUS_PERIODS = Array.from({ length: 7 }, (_, index) => ({ index, label: `Period ${index + 1}`, start: 9 + index, end: 10 + index, time: `${String(9 + index).padStart(2, '0')}:00–${String(10 + index).padStart(2, '0')}:00` }));
 
-function BookingWorkspace({ rooms, bookings, timetableEntries = [], closures, allocations, role, policy, demoMode = false, mode, setMode, preferredRoom, onReserve }) {
+function BookingWorkspace({ rooms, bookings, timetableEntries = [], closures, allocations, role, policy, mode, setMode, preferredRoom, onReserve }) {
   const timeZone = safeTimeZone(policy.timezone);
   const periods = CAMPUS_PERIODS;
   const campusNow = new Date();
@@ -278,12 +254,12 @@ function BookingWorkspace({ rooms, bookings, timetableEntries = [], closures, al
   const targetStart = campusLocalToUtc(bookingDate, startTime, timeZone);
   const targetEnd = campusLocalToUtc(bookingDate, endTime, timeZone);
   const windowState = getBookingWindowStatus(mode, new Date(clock), timeZone, bookingDate, policy);
-  const isOpen = demoMode || (windowState.status === 'OPEN' && (mode === 'normal' ? role !== 'blocked' : role === 'event_organizer' || role === 'admin'));
+  const isOpen = windowState.status === 'OPEN' && (mode === 'normal' ? role !== 'blocked' : role === 'event_organizer' || role === 'admin');
   const countdown = windowState.countdownMs;
   const countdownText = countdown === null ? '' : `${String(Math.floor(countdown / 3600000)).padStart(2, '0')}:${String(Math.floor(countdown % 3600000 / 60000)).padStart(2, '0')}:${String(Math.floor(countdown % 60000 / 1000)).padStart(2, '0')}`;
   const buildings = [...new Set(rooms.map((room) => room.building))];
   const equipmentOptions = [...new Set(rooms.flatMap((room) => room.equipment || []))];
-  const runSearch = async () => { if (!isOpen || !targetStart || !targetEnd || selectedPeriods.length !== duration) return; if (demoMode) { const matches = rooms.filter((room) => room.is_active !== false && room.operational_status !== 'retired' && room.capacity >= (Number(capacity) || 0) && (building === 'all' || room.building === building) && (equipment === 'all' || room.equipment?.includes(equipment))).map((room) => { const collision = bookings.some((booking) => booking.room_id === room.id && ['confirmed', 'checked_in'].includes(booking.status) && new Date(booking.starts_at) < targetEnd && new Date(booking.ends_at) > targetStart) || timetableEntries.some((entry) => entry.room_id === room.id && entry.status !== 'cancelled' && new Date(entry.starts_at) < targetEnd && new Date(entry.ends_at) > targetStart); const closed = closures.some((item) => item.room_id === room.id && new Date(item.starts_at) < targetEnd && new Date(item.ends_at) > targetStart); return { room_id: room.id, availability_status: collision || closed ? 'unavailable' : 'available', reason: collision ? 'Reserved' : closed ? 'Room closure' : 'Available' }; }); setAvailability({ error: null, rooms: matches }); return; } const { data, error } = await supabase.rpc('search_room_availability', { p_starts_at: targetStart.toISOString(), p_ends_at: targetEnd.toISOString(), p_min_capacity: Number(capacity) || 0, p_required_equipment: equipment === 'all' ? [] : [equipment], p_building: building === 'all' ? null : building, p_booking_type: mode }); setAvailability(error ? { error: error.message, rooms: [] } : { error: null, rooms: data || [] }); };
+  const runSearch = async () => { if (!isOpen || !targetStart || !targetEnd || selectedPeriods.length !== duration) return; const { data, error } = await supabase.rpc('search_room_availability', { p_starts_at: targetStart.toISOString(), p_ends_at: targetEnd.toISOString(), p_min_capacity: Number(capacity) || 0, p_required_equipment: equipment === 'all' ? [] : [equipment], p_building: building === 'all' ? null : building, p_booking_type: mode }); setAvailability(error ? { error: error.message, rooms: [] } : { error: null, rooms: data || [] }); };
   // The search function intentionally follows the current filter snapshot.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { setAvailability(null); if (isOpen) runSearch(); }, [mode, bookingDate, startPeriod, duration, building, capacity, equipment, isOpen]);
