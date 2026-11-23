@@ -7,9 +7,14 @@ export function useAuth() {
 
   useEffect(() => {
     let active = true
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(({ data, error }) => {
       if (active) {
-        setSession(data.session)
+        setSession(error ? null : data.session)
+        setLoading(false)
+      }
+    }).catch(() => {
+      if (active) {
+        setSession(null)
         setLoading(false)
       }
     })
