@@ -48,6 +48,41 @@ export function facultySchedule(facultyId, entries = []) {
   return entries.filter((entry) => entry.faculty_id === facultyId).sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
 }
 
+export function getAcademicPeriods(entries = []) {
+  const unique = new Map();
+  entries.forEach((entry) => {
+    const index = Number(entry.period);
+    if (!Number.isFinite(index)) return;
+    const start = String(entry.starts_at || '').slice(0, 5);
+    const end = String(entry.ends_at || '').slice(0, 5);
+    unique.set(index, { index, start, end });
+  });
+  return [...unique.values()].sort((a, b) => a.index - b.index);
+}
+
+export function deriveRoomAvailability(rooms = [], entries = [], filters = {}) {
+  return filterRooms(rooms, filters).map((room) => {
+    const assignments = entries.filter((entry) => entry.room_id === room.id);
+    return { room, assignments, occupied: assignments.length > 0 };
+  });
+}
+
+export function deriveFacultyPeriods(facultyId, entries = [], periods = getAcademicPeriods(entries)) {
+  return periods.map((period) => ({
+    period,
+    entry: entries.find((item) => item.faculty_id === facultyId && Number(item.period) === Number(period.index)) || null,
+  }));
+}
+
+export function deriveSectionPeriods(sectionId, entries = [], periods = []) {
+  if (!sectionId || !entries.some((entry) => entry.section_id || entry.section)) return null;
+  return periods.map((period) => ({ period, entry: entries.find((item) => (item.section_id || item.section) === sectionId && Number(item.period) === Number(period.index)) || null }));
+}
+
+export function isOperationallyAvailable(room) {
+  return room?.is_active !== false && !['retired', 'closed', 'maintenance', 'unavailable'].includes(String(room?.operational_status || '').toLowerCase());
+}
+
 export function utilizationSummary(rooms, entries = [], bookings = [], closures = []) {
   const activeRooms = rooms.filter((room) => room.is_active !== false && room.operational_status !== 'retired');
   const teaching = entries.filter((entry) => entry.status !== 'cancelled').length;

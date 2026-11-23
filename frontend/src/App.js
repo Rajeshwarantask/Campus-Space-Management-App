@@ -5,6 +5,7 @@ import { LoadingScreen } from './components/ui/AppStates';
 import { env } from './config/env';
 import './App.css';
 import { isPastInterval } from './domain/timetable';
+import CampusAvailability from './components/CampusAvailability';
 const INVALID_DATE = 'Unavailable';
 const isValidDate = (value) => value instanceof Date && !Number.isNaN(value.getTime());
 const parseDate = (value) => { const date = value instanceof Date ? value : new Date(value); return isValidDate(date) ? date : null; };
@@ -22,7 +23,7 @@ const minutesFor = (time = '00:00:00') => { const [hours, minutes] = time.split(
 const getBookingWindowStatus = (mode, now, timeZone = DEFAULT_CAMPUS_TIMEZONE, selectedDate, policy = {}) => { const local = campusParts(now, safeTimeZone(timeZone)); const today = `${local.year}-${local.month}-${local.day}`; const currentMinutes = Number(local.hour) * 60 + Number(local.minute); const selected = selectedDate || today; const operatingDays = policy.operating_days || [1, 2, 3, 4, 5]; const open = mode === 'normal' ? minutesFor(policy.normal_submission_open_time || '09:00') : 9 * 60; const close = mode === 'normal' ? minutesFor(policy.normal_submission_close_time || '14:00') : 16 * 60; const requestedWindowDate = mode === 'normal' ? selected : shiftDate(selected, -1); const validTarget = operatingDays.includes(campusDay(selected)); const activeDate = mode === 'normal' ? nextOperatingDate(today, operatingDays) : requestedWindowDate; const isActiveDate = requestedWindowDate === today && validTarget; let status = 'CLOSED'; if (isActiveDate && currentMinutes < open) status = 'NOT OPEN'; if (isActiveDate && currentMinutes >= open && currentMinutes < close) status = 'OPEN'; let nextOpenDate = activeDate; if (status === 'CLOSED' || !isActiveDate) { nextOpenDate = mode === 'normal' ? nextOperatingDate(currentMinutes >= close && operatingDays.includes(campusDay(today)) ? shiftDate(today, 1) : today, operatingDays) : nextOperatingDate(shiftDate(today, 1), operatingDays); if (mode === 'priority' && selected !== shiftDate(nextOpenDate, 1)) nextOpenDate = shiftDate(selected, -1); } const transition = (status === 'NOT OPEN' || (status === 'CLOSED' && nextOpenDate >= today)) ? campusLocalToUtc(nextOpenDate, `${String(Math.floor(open / 60)).padStart(2, '0')}:${String(open % 60).padStart(2, '0')}`, safeTimeZone(timeZone)) : null; const countdownMs = transition && transition > now ? transition.getTime() - now.getTime() : null; const zoneLabel = safeTimeZone(timeZone) === 'Asia/Kolkata' ? 'IST' : safeTimeZone(timeZone); const openingLabel = nextOpenDate === today ? 'today' : new Intl.DateTimeFormat('en-US', { timeZone: safeTimeZone(timeZone), weekday: 'long' }).format(transition || now); const message = status === 'OPEN' ? `Closes at ${String(Math.floor(close / 60)).padStart(2, '0')}:${String(close % 60).padStart(2, '0')} ${zoneLabel}` : status === 'NOT OPEN' ? `Opens ${openingLabel} at ${String(Math.floor(open / 60)).padStart(2, '0')}:${String(open % 60).padStart(2, '0')} ${zoneLabel}` : mode === 'priority' ? 'Priority reservations are closed for this booking day.' : `Next opening ${openingLabel} at ${String(Math.floor(open / 60)).padStart(2, '0')}:${String(open % 60).padStart(2, '0')} ${zoneLabel}`; return { status, today, selected, isTargetDay: isActiveDate, countdownMs, message, zoneLabel, open, close, nextOpenDate }; };
 
 const nav = [
-  ['overview', 'Overview', '◒'], ['book', 'Book a room', '+'], ['rooms', 'Find a room', '⌂'], ['bookings', 'My bookings', '▣'], ['timetable', 'Timetable', '▦'], ['analytics', 'Analytics', '◫'],
+  ['overview', 'Overview', '◒'], ['book', 'Book a room', '+'], ['rooms', 'Find a room', '⌂'], ['classrooms', 'Classroom availability', '⌂'], ['labs', 'Laboratory availability', '▤'], ['faculty', 'Faculty availability', '◎'], ['students', 'Student free time', '◷'], ['bookings', 'My bookings', '▣'], ['timetable', 'Timetable', '▦'], ['analytics', 'Analytics', '◫'],
 ];
 
 function App() {
@@ -32,6 +33,7 @@ function App() {
   const [bookings, setBookings] = useState([]);
   const [showBooking, setShowBooking] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState(null);
+  const [preferredBookingDate, setPreferredBookingDate] = useState(null);
   const [bookingSelection, setBookingSelection] = useState(null);
   const [bookingMode, setBookingMode] = useState('normal');
   const [toast, setToast] = useState('');
@@ -155,7 +157,7 @@ function App() {
 
   const activeBookings = bookings.filter((b) => b.status !== 'cancelled');
   const isAdmin = role === 'admin';
-  const openBookingWorkspace = (room = null) => { setSelectedRoom(room); setBookingSelection(null); setBookingMode('normal'); setPage('book'); };
+  const openBookingWorkspace = (room = null, date = null) => { setSelectedRoom(room); setPreferredBookingDate(date); setBookingSelection(null); setBookingMode('normal'); setPage('book'); };
   const visibleNav = isAdmin ? [...nav, ['admin', 'Admin console', '⚙'], ['rooms-admin', 'Room management', '⌂'], ['users', 'Users & permissions', '◎']] : nav;
   return <div className="app-shell">
     <aside className="sidebar">
@@ -166,9 +168,10 @@ function App() {
     </aside>
     <main className="main"><header><div><p className="eyebrow">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p><h1>{page === 'overview' ? 'Good morning' : nav.find((n) => n[0] === page)?.[1]}</h1></div></header>
       {dataError && <div className="data-error" role="alert">{dataError} <button onClick={loadData}>Try again</button></div>}
-      {page === 'book' && <BookingWorkspace rooms={rooms} bookings={activeBookings} timetableEntries={timetableEntries} closures={closures} allocations={allocations} role={role} policy={policy} mode={bookingMode} setMode={setBookingMode} preferredRoom={selectedRoom} onReserve={(room, selection) => { setSelectedRoom(room); setBookingSelection(selection); setShowBooking(true); }} />}
+      {page === 'book' && <BookingWorkspace rooms={rooms} bookings={activeBookings} timetableEntries={timetableEntries} closures={closures} allocations={allocations} role={role} policy={policy} mode={bookingMode} setMode={setBookingMode} preferredRoom={selectedRoom} initialDate={preferredBookingDate} onReserve={(room, selection) => { setSelectedRoom(room); setBookingSelection(selection); setShowBooking(true); }} />}
       {page === 'overview' && <Overview rooms={rooms} bookings={activeBookings} onReserve={openBookingWorkspace} onCheckIn={checkIn} />}
       {page === 'rooms' && <Rooms rooms={rooms} bookings={activeBookings} onReserve={openBookingWorkspace} onNavigate={setPage} />}
+      {['classrooms', 'labs', 'faculty', 'students'].includes(page) && <CampusAvailability view={page} rooms={rooms} entries={timetableEntries} onReserve={openBookingWorkspace} onViewChange={setPage} />}
       {page === 'bookings' && <Bookings bookings={bookings} rooms={rooms} userId={session.user.id} loading={bookingsLoading} error={bookingsError} onRefresh={loadData} onCancel={cancelBooking} onCheckIn={checkIn} />}
       {page === 'timetable' && <Timetable rooms={rooms} bookings={activeBookings} entries={timetableEntries} />}
       {page === 'analytics' && <Analytics rooms={rooms} bookings={activeBookings} entries={timetableEntries} closures={closures} />}
@@ -241,13 +244,13 @@ function PeriodBookingPage({ rooms, bookings, closures, allocations, role, polic
 
 const CAMPUS_PERIODS = Array.from({ length: 7 }, (_, index) => ({ index, label: `Period ${index + 1}`, start: 9 + index, end: 10 + index, time: `${String(9 + index).padStart(2, '0')}:00–${String(10 + index).padStart(2, '0')}:00` }));
 
-function BookingWorkspace({ rooms, bookings, timetableEntries = [], closures, allocations, role, policy, mode, setMode, preferredRoom, onReserve }) {
+function BookingWorkspace({ rooms, bookings, timetableEntries = [], closures, allocations, role, policy, mode, setMode, preferredRoom, initialDate, onReserve }) {
   const timeZone = safeTimeZone(policy.timezone);
   const periods = CAMPUS_PERIODS;
   const campusNow = new Date();
   const localParts = campusParts(campusNow, timeZone);
   const campusDate = `${localParts.year}-${localParts.month}-${localParts.day}`;
-  const [bookingDate, setBookingDate] = useState(campusDate);
+  const [bookingDate, setBookingDate] = useState(initialDate || campusDate);
   const [startPeriod, setStartPeriod] = useState(0);
   const [duration, setDuration] = useState(1);
   const [building, setBuilding] = useState('all');
