@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
+import TimetableImport from './TimetableImport';
 import { explainAcademicError, validateDateRange, validatePeriod, validateSection, validateSubject, validateTimetableEntry } from '../domain/academic';
 import './AcademicManagement.css';
 
@@ -10,6 +11,7 @@ const tabs = [
   ['faculty', 'Faculty'],
   ['periods', 'Periods'],
   ['timetable', 'Timetable'],
+  ['import', 'Import timetable'],
   ['completeness', 'Completeness'],
 ];
 const weekdays = [[1, 'Monday'], [2, 'Tuesday'], [3, 'Wednesday'], [4, 'Thursday'], [5, 'Friday'], [6, 'Saturday'], [7, 'Sunday']];
@@ -298,6 +300,8 @@ function AcademicManagement({ available, schemaMissing = false, schemaError, aca
       </form>
       <div className="academic-card"><div className="academic-heading-row"><CardHeading eyebrow="CANONICAL TIMES" title={currentTerm?.name || 'Daily periods'} /><select aria-label="View period definitions by term" value={termId} onChange={(event) => setSelectedTermId(event.target.value)}><option value="">Choose term</option>{terms.map((term) => <option key={term.id} value={term.id}>{term.name}</option>)}</select></div>{termPeriods.length ? <div className="period-record-list">{termPeriods.map((period) => <article className="academic-record" key={period.id}><div><strong>{period.display_name}</strong><p>Period {period.period_number} · {shortTime(period.starts_at)}–{shortTime(period.ends_at)}</p><StatusBadge status={period.is_active ? 'active' : 'inactive'} /></div><div className="academic-record-actions"><button type="button" className="text-button" onClick={() => editPeriod(period)}>Edit</button><button type="button" className="text-button" disabled={saving} onClick={() => updateActive('academic_periods', period.id, period.is_active, 'Period')}>{period.is_active ? 'Deactivate' : 'Reactivate'}</button></div></article>)}</div> : <EmptyRecords text="No period definitions for this term." />}</div>
     </div>}
+
+    {tab === 'import' && <TimetableImport academicData={academicData} rooms={rooms} entries={entries} onRefresh={onRefresh} onToast={onToast} />}
 
     {tab === 'timetable' && <div className="academic-timetable-layout">
       <div className="academic-card">
