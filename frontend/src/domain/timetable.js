@@ -83,6 +83,31 @@ export function isOperationallyAvailable(room) {
   return room?.is_active !== false && !['retired', 'closed', 'maintenance', 'unavailable'].includes(String(room?.operational_status || '').toLowerCase());
 }
 
+const timeMinutes = (value) => {
+  const [hours, minutes] = String(value || '').split(':').map(Number);
+  return Number.isFinite(hours) && Number.isFinite(minutes) ? hours * 60 + minutes : null;
+};
+
+export function entryOverlapsPeriod(entry, period) {
+  const entryStart = timeMinutes(entry.starts_at);
+  const entryEnd = timeMinutes(entry.ends_at);
+  const periodStart = timeMinutes(period.starts_at);
+  const periodEnd = timeMinutes(period.ends_at);
+  return entryStart !== null && entryEnd !== null && periodStart !== null && periodEnd !== null && entryStart < periodEnd && entryEnd > periodStart;
+}
+
+export function deriveAcademicStatus(assignments, completenessStatus) {
+  if (assignments.length) return 'occupied';
+  return ['complete', 'published'].includes(completenessStatus) ? 'available' : 'unknown';
+}
+
+export function derivePeriodAvailability(periods, entries, { scopeStatus, matches = () => true } = {}) {
+  return periods.map((period) => {
+    const assignments = entries.filter((entry) => matches(entry) && entryOverlapsPeriod(entry, period));
+    return { period, assignments, entry: assignments[0] || null, status: deriveAcademicStatus(assignments, scopeStatus) };
+  });
+}
+
 export function utilizationSummary(rooms, entries = [], bookings = [], closures = []) {
   const activeRooms = rooms.filter((room) => room.is_active !== false && room.operational_status !== 'retired');
   const teaching = entries.filter((entry) => entry.status !== 'cancelled').length;

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { useAuth } from './hooks/useAuth';
 import { LoadingScreen } from './components/ui/AppStates';
@@ -32,6 +32,7 @@ function App() {
   const { session, loading, signOut } = useAuth();
   const [page, setPage] = useState('overview');
   const [rooms, setRooms] = useState([]);
+  const [availabilityRooms, setAvailabilityRooms] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [showBooking, setShowBooking] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState(null);
@@ -51,44 +52,84 @@ function App() {
   const [closures, setClosures] = useState([]);
   const [allocations, setAllocations] = useState([]);
   const [timetableEntries, setTimetableEntries] = useState([]);
+  const [timetableLoading, setTimetableLoading] = useState(false);
+  const [timetableSelection, setTimetableSelection] = useState(null);
+  const timetableRequest = useRef(0);
   const [academicData, setAcademicData] = useState(emptyAcademicData);
-  const [academicSchema, setAcademicSchema] = useState({ available: false, schemaMissing: true, error: '' });
+  const [academicSchema, setAcademicSchema] = useState({ available: false, schemaMissing: true, error: '', timetableError: '', academicDataError: '', roomDataError: '' });
   const [policy, setPolicy] = useState({ timezone: DEFAULT_CAMPUS_TIMEZONE, operating_days: [1, 2, 3, 4, 5], normal_submission_open_time: '09:00:00', normal_submission_close_time: '14:00:00', normal_horizon_days: 30, eligible_roles: ['event_organizer', 'admin'] });
 
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 3200); return () => clearTimeout(timer); } }, [toast]);
 
+  const queryTimetable = useCallback(async (termId, dayOfWeek) => {
+    const requestId = ++timetableRequest.current;
+    const selection = { termId, dayOfWeek: Number(dayOfWeek) };
+    setTimetableSelection(selection);
+    setTimetableLoading(true);
+    setAcademicSchema((current) => ({ ...current, timetableError: '' }));
+    const result = await loadTimetableEntries(selection.termId, selection.dayOfWeek);
+    if (requestId !== timetableRequest.current) return;
+    if (result.error) {
+      setAcademicSchema((current) => ({ ...current, timetableError: 'Timetable assignments could not be loaded. Retry before using availability results.' }));
+    } else {
+      setTimetableEntries(result.data || []);
+    }
+    setTimetableLoading(false);
+  }, []);
+
   const loadData = useCallback(async () => {
     setBookingsLoading(true);
-    const [roomsResult, bookingsResult, roleResult, requestsResult, closuresResult, allocationsResult, timetableResult, policyResult] = await Promise.all([
+    const [roomsResult, bookingsResult, roleResult, requestsResult, closuresResult, allocationsResult, policyResult] = await Promise.all([
       loadRoomsWithCategory(),
       supabase.from('bookings').select('id,room_id,user_id,title,purpose,starts_at,ends_at,status,confirmation_code,checked_in_at,booking_type').order('starts_at', { ascending: true }),
       supabase.rpc('current_role'),
       supabase.from('booking_requests').select('id,user_id,room_id,title,purpose,category,starts_at,ends_at,status,decision_reason,created_at').order('created_at', { ascending: false }),
       supabase.from('room_closures').select('id,room_id,reason,starts_at,ends_at').order('starts_at'),
       supabase.from('priority_allocations').select('id,room_id,title,starts_at,ends_at,release_at,claimed_booking_id,eligible_role').order('starts_at'),
-      loadTimetableEntries(),
       supabase.from('booking_policies').select('timezone,operating_days,normal_submission_open_time,normal_submission_close_time,normal_horizon_days,eligible_roles').eq('id', true).single(),
     ]);
     const academicResult = await loadAcademicData(roleResult.data === 'admin');
-    setAcademicSchema({ available: academicResult.available, schemaMissing: Boolean(academicResult.schemaMissing), error: academicResult.error || '' });
-    setAcademicData(academicResult.data || emptyAcademicData());
+    const academicQueryFailure = (academicResult.failed || []).length > 0;
+    const loadedAcademicData = academicResult.data || emptyAcademicData();
+    setAcademicSchema({
+      available: academicResult.available,
+      schemaMissing: Boolean(academicResult.schemaMissing),
+      error: academicResult.error || '',
+      timetableError: '',
+      academicDataError: academicQueryFailure ? academicResult.error : '',
+      roomDataError: roomsResult.error ? 'Room records could not be loaded. Retry before using availability results.' : '',
+    });
+    setAcademicData(loadedAcademicData);
+    const activeYear = loadedAcademicData.years.find((year) => year.status === 'active') || loadedAcademicData.years[0];
+    const activeTerm = loadedAcademicData.terms.find((item) => item.academic_year_id === activeYear?.id && item.status === 'active')
+      || loadedAcademicData.terms.find((item) => item.academic_year_id === activeYear?.id);
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const initialDay = new Date(`${todayKey}T12:00:00`).getDay() || 7;
+    if (academicResult.available && activeTerm) await queryTimetable(activeTerm.id, initialDay);
+    else {
+      setTimetableEntries([]);
+      setTimetableSelection(null);
+      setTimetableLoading(false);
+    }
     const failures = [
       ['classrooms', roomsResult.error], ['your reservations', bookingsResult.error], ['your permissions', roleResult.error],
       ['approval requests', requestsResult.error], ['room closures', closuresResult.error], ['priority allocations', allocationsResult.error],
-      ['timetable', timetableResult.error], ['booking policy', policyResult.error],
+      ['academic reference data', academicQueryFailure ? academicResult.failed[0]?.error : null], ['booking policy', policyResult.error],
     ].filter(([, error]) => error).map(([label]) => label);
     setDataError(failures.length ? `Some campus information could not be loaded (${failures.join(', ')}). Displayed data may be incomplete; retry before making decisions.` : '');
-    if (!roomsResult.error) setRooms((roomsResult.data || []).filter((room) => room.is_active !== false && room.operational_status !== 'retired'));
+    if (!roomsResult.error) {
+      setAvailabilityRooms(roomsResult.data || []);
+      setRooms((roomsResult.data || []).filter((room) => room.is_active !== false && room.operational_status !== 'retired'));
+    }
     if (!bookingsResult.error) setBookings(bookingsResult.data || []);
     setBookingsError(bookingsResult.error ? 'Reservation records could not be loaded. Please refresh and try again.' : '');
     if (!roleResult.error && roleResult.data) setRole(roleResult.data);
     if (!requestsResult.error) setBookingRequests(requestsResult.data || []);
     if (!closuresResult.error) setClosures(closuresResult.data || []);
     if (!allocationsResult.error) setAllocations(allocationsResult.data || []);
-    if (!timetableResult.error) setTimetableEntries(timetableResult.data || []);
     if (!policyResult.error && policyResult.data) setPolicy(policyResult.data);
     setBookingsLoading(false);
-  }, []);
+  }, [queryTimetable]);
 
   useEffect(() => {
     if (!session) return;
@@ -178,7 +219,7 @@ function App() {
       {page === 'book' && <BookingWorkspace rooms={rooms} bookings={activeBookings} timetableEntries={timetableEntries} closures={closures} allocations={allocations} role={role} policy={policy} mode={bookingMode} setMode={setBookingMode} preferredRoom={selectedRoom} initialDate={preferredBookingDate} onReserve={(room, selection) => { setSelectedRoom(room); setBookingSelection(selection); setShowBooking(true); }} />}
       {page === 'overview' && <Overview rooms={rooms} bookings={activeBookings} onReserve={openBookingWorkspace} onCheckIn={checkIn} />}
       {page === 'rooms' && <Rooms rooms={rooms} bookings={activeBookings} onReserve={openBookingWorkspace} onNavigate={setPage} />}
-      {['classrooms', 'labs', 'faculty', 'students'].includes(page) && <CampusAvailability view={page} rooms={rooms} entries={timetableEntries} academicData={academicData} academicSchema={academicSchema} onReserve={openBookingWorkspace} onViewChange={setPage} />}
+      {['classrooms', 'labs', 'faculty', 'students'].includes(page) && <CampusAvailability view={page} rooms={availabilityRooms} entries={timetableEntries} academicData={academicData} academicSchema={academicSchema} timetableLoading={timetableLoading} timetableSelection={timetableSelection} onScheduleQuery={queryTimetable} onReserve={openBookingWorkspace} onViewChange={setPage} />}
       {page === 'bookings' && <Bookings bookings={bookings} rooms={rooms} userId={session.user.id} loading={bookingsLoading} error={bookingsError} onRefresh={loadData} onCancel={cancelBooking} onCheckIn={checkIn} />}
       {page === 'timetable' && <AcademicTimetableView rooms={rooms} bookings={activeBookings} entries={timetableEntries} academicData={academicData} academicSchema={academicSchema} />}
       {page === 'analytics' && <Analytics rooms={rooms} bookings={activeBookings} entries={timetableEntries} closures={closures} />}

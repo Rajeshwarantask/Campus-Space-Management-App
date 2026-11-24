@@ -28,9 +28,9 @@ export async function loadAcademicData(includeFacultyProfiles) {
     ['periods', supabase.from('academic_periods').select('id,term_id,period_number,display_name,starts_at,ends_at,is_active,created_at').order('period_number')],
     ['completeness', supabase.from('timetable_completeness').select('id,term_id,scope_type,section_id,status,updated_by,updated_at,published_at')],
   ];
-  if (includeFacultyProfiles) {
-    queries.push(['facultyProfiles', supabase.from('faculty_profiles').select('id,display_name,staff_identifier,department,created_at,updated_at').order('display_name')]);
-  }
+  queries.push(['facultyProfiles', includeFacultyProfiles
+    ? supabase.from('faculty_profiles').select('id,display_name,staff_identifier,department').order('display_name')
+    : supabase.from('faculty_directory').select('id,display_name').order('display_name')]);
 
   const results = await Promise.all(queries.map(([, query]) => query));
   const data = emptyAcademicData();
@@ -45,6 +45,7 @@ export async function loadAcademicData(includeFacultyProfiles) {
     available: true,
     schemaMissing: false,
     error: failed.length ? academicSchemaMessage(failed[0].error) : '',
+    failed,
     data,
   };
 }
@@ -63,12 +64,9 @@ export async function loadRoomsWithCategory() {
     .order('code');
 }
 
-export async function loadTimetableEntries() {
-  const extended = await supabase.from('timetable_entries')
-    .select('id,room_id,faculty_id,subject,day_of_week,period,starts_at,ends_at,term_id,section_id,subject_id,academic_period_id,is_active')
-    .order('day_of_week').order('period');
-  if (!extended.error || !isAcademicSchemaMissing(extended.error)) return extended;
-  return supabase.from('timetable_entries')
-    .select('id,room_id,faculty_id,subject,day_of_week,period,starts_at,ends_at')
-    .order('day_of_week').order('period');
+export async function loadTimetableEntries(termId, dayOfWeek) {
+  if (!termId || !Number.isInteger(Number(dayOfWeek))) return { data: [], error: null };
+  const scoped = (query) => query.eq('term_id', termId).eq('day_of_week', Number(dayOfWeek)).order('period');
+  return scoped(supabase.from('timetable_entries')
+    .select('id,room_id,faculty_id,subject,day_of_week,period,starts_at,ends_at,term_id,section_id,subject_id,academic_period_id,is_active'));
 }
