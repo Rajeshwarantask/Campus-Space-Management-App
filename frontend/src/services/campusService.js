@@ -1,7 +1,7 @@
 import { supabase } from '../lib/supabase'
 
 const roomFields = 'id,code,name,building,floor,capacity,equipment'
-const bookingFields = 'id,room_id,title,purpose,starts_at,ends_at,status,confirmation_code,checked_in_at,user_id'
+const bookingFields = 'id,room_id,title,purpose,starts_at,ends_at,status,confirmation_code,checked_in_at,user_id,booking_type'
 
 export async function listRooms() {
   const { data, error } = await supabase.from('rooms').select(roomFields).order('code')
@@ -13,14 +13,21 @@ export async function listBookings() {
   return { data: data || [], error }
 }
 
-export async function reserveRoom({ roomId, userId, title, purpose, startsAt, endsAt, confirmationCode }) {
-  return supabase.from('bookings').insert({ room_id: roomId, user_id: userId, title, purpose, starts_at: startsAt, ends_at: endsAt, confirmation_code: confirmationCode }).select().single()
+export async function reserveRoom({ roomId, title, purpose, startsAt, endsAt, bookingType = 'normal' }) {
+  return supabase.rpc('reserve_booking', {
+    p_room_id: roomId,
+    p_title: title,
+    p_purpose: purpose,
+    p_starts_at: startsAt,
+    p_ends_at: endsAt,
+    p_booking_type: bookingType,
+  })
 }
 
-export async function cancelReservation(id, userId) {
-  return supabase.from('bookings').update({ status: 'cancelled' }).eq('id', id).eq('user_id', userId)
+export async function cancelReservation(id) {
+  return supabase.rpc('cancel_booking', { p_booking_id: id })
 }
 
-export async function checkInReservation(id) {
-  return supabase.from('bookings').update({ status: 'checked_in', checked_in_at: new Date().toISOString() }).eq('id', id)
+export async function checkInReservation(confirmationCode) {
+  return supabase.rpc('check_in_booking', { p_code: confirmationCode })
 }

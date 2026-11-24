@@ -1,4 +1,4 @@
-import { DEFAULT_PERIODS, explainAvailability, filterRooms, getPeriodInterval, intervalOverlaps, isPastInterval, resolveAcademicDay, utilizationSummary } from './timetable';
+import { DEFAULT_PERIODS, deriveAcademicStatus, deriveFacultyPeriods, derivePeriodAvailability, deriveRoomAvailability, deriveSectionPeriods, entryOverlapsPeriod, explainAvailability, filterRooms, getAcademicPeriods, getPeriodInterval, intervalOverlaps, isOperationallyAvailable, isPastInterval, resolveAcademicDay, utilizationSummary } from './timetable';
 
 test('uses half-open intervals for room conflicts', () => {
   expect(intervalOverlaps('2026-10-15T09:00:00Z', '2026-10-15T10:00:00Z', '2026-10-15T10:00:00Z', '2026-10-15T11:00:00Z')).toBe(false);
@@ -30,4 +30,50 @@ test('resolves consecutive period intervals', () => {
 
 test('separates teaching, reservation, and closure utilization', () => {
   expect(utilizationSummary([{ is_active: true }], [{ status: 'published' }], [{ status: 'confirmed' }], [{ id: 1 }])).toMatchObject({ teachingIntervals: 1, reservationIntervals: 1, closureIntervals: 1, hasData: true });
+});
+
+test('marks a room with a timetable assignment occupied and leaves unmatched rooms academically free', () => {
+  const rooms = [{ id: 'r1', is_active: true }, { id: 'r2', is_active: true }];
+  const result = deriveRoomAvailability(rooms, [{ room_id: 'r1', period: 2 }]);
+  expect(result.map(({ occupied }) => occupied)).toEqual([true, false]);
+  expect(result[0].assignments).toHaveLength(1);
+});
+
+test('derives configured faculty periods from timetable entries', () => {
+  const entries = [{ day_of_week: 1, period: 1, starts_at: '09:00:00', ends_at: '09:40:00', faculty_id: 'f1', room_id: 'r1', subject: 'Networks' }];
+  const periods = getAcademicPeriods(entries);
+  expect(deriveFacultyPeriods('f1', entries, [{ index: 1 }, { index: 2 }]).map(({ entry }) => entry?.subject || null)).toEqual(['Networks', null]);
+  expect(periods).toEqual([{ index: 1, start: '09:00', end: '09:40' }]);
+});
+
+test('does not derive section free time without a section relationship', () => {
+  expect(deriveSectionPeriods('year-3-c', [{ period: 1, faculty_id: 'f1' }], [{ index: 1 }])).toBeNull();
+});
+
+test('derives occupied, unknown, and complete-scope free states without treating missing completeness as complete', () => {
+  expect(deriveAcademicStatus([{ id: 'assignment' }], undefined)).toBe('occupied');
+  expect(deriveAcademicStatus([], undefined)).toBe('unknown');
+  expect(deriveAcademicStatus([], 'in_progress')).toBe('unknown');
+  expect(deriveAcademicStatus([], 'complete')).toBe('available');
+  expect(deriveAcademicStatus([], 'published')).toBe('available');
+});
+
+test('matches assignments by canonical period interval, not period number', () => {
+  const period = { starts_at: '10:15:00', ends_at: '10:55:00' };
+  expect(entryOverlapsPeriod({ period: 8, starts_at: '10:30:00', ends_at: '11:00:00' }, period)).toBe(true);
+  expect(entryOverlapsPeriod({ period: 1, starts_at: '09:00:00', ends_at: '10:15:00' }, period)).toBe(false);
+  const schedule = derivePeriodAvailability([period], [{ starts_at: '10:30:00', ends_at: '11:00:00', room_id: 'r1' }], { scopeStatus: 'complete', matches: (entry) => entry.room_id === 'r1' });
+  expect(schedule[0].status).toBe('occupied');
+});
+
+test('changes day and term by accepting only the supplied period assignments', () => {
+  const periods = [{ starts_at: '09:00:00', ends_at: '09:40:00' }];
+  const mon = [{ term_id: 't1', day_of_week: 1, starts_at: '09:00:00', ends_at: '09:40:00', faculty_id: 'f1' }];
+  expect(derivePeriodAvailability(periods, mon.filter((entry) => entry.term_id === 't1' && entry.day_of_week === 1), { scopeStatus: 'complete', matches: (entry) => entry.faculty_id === 'f1' })[0].status).toBe('occupied');
+  expect(derivePeriodAvailability(periods, mon.filter((entry) => entry.term_id === 't2' && entry.day_of_week === 2), { scopeStatus: 'complete', matches: (entry) => entry.faculty_id === 'f1' })[0].status).toBe('available');
+});
+
+test('recognizes room operational restrictions separately from academic vacancy', () => {
+  expect(isOperationallyAvailable({ is_active: true, operational_status: 'maintenance' })).toBe(false);
+  expect(isOperationallyAvailable({ is_active: true, operational_status: 'available' })).toBe(true);
 });
