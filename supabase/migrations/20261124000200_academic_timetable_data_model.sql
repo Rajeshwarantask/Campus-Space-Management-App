@@ -16,6 +16,8 @@ CREATE TABLE public.academic_years (
 );
 CREATE UNIQUE INDEX academic_years_single_active_idx
   ON public.academic_years ((status)) WHERE status = 'active';
+CREATE UNIQUE INDEX academic_years_normalized_name_uidx
+  ON public.academic_years (lower(regexp_replace(btrim(name), '[[:space:]]+', ' ', 'g')));
 
 CREATE TABLE public.academic_terms (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -34,6 +36,8 @@ CREATE TABLE public.academic_terms (
 );
 CREATE UNIQUE INDEX academic_terms_single_active_idx
   ON public.academic_terms ((status)) WHERE status = 'active';
+CREATE UNIQUE INDEX academic_terms_normalized_name_uidx
+  ON public.academic_terms (academic_year_id, lower(regexp_replace(btrim(name), '[[:space:]]+', ' ', 'g')));
 CREATE INDEX academic_terms_academic_year_idx ON public.academic_terms (academic_year_id);
 
 CREATE FUNCTION public.enforce_academic_term_dates()
@@ -118,6 +122,8 @@ CREATE TABLE public.academic_sections (
 );
 CREATE INDEX academic_sections_academic_year_idx ON public.academic_sections (academic_year_id);
 CREATE INDEX academic_sections_term_idx ON public.academic_sections (term_id);
+CREATE UNIQUE INDEX academic_sections_normalized_code_uidx
+  ON public.academic_sections (term_id, lower(regexp_replace(btrim(code), '[[:space:]]+', ' ', 'g')));
 
 CREATE TABLE public.academic_subjects (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -347,6 +353,10 @@ CREATE POLICY academic_periods_admin_manage ON public.academic_periods
 CREATE POLICY timetable_completeness_authenticated_read ON public.timetable_completeness
   FOR SELECT TO authenticated USING (true);
 CREATE POLICY timetable_completeness_admin_manage ON public.timetable_completeness
+  FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.timetable_entries TO authenticated;
+CREATE POLICY timetable_entries_admin_manage ON public.timetable_entries
   FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
 COMMIT;
