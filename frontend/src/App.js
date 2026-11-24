@@ -105,8 +105,8 @@ function App() {
     const activeYear = loadedAcademicData.years.find((year) => year.status === 'active') || loadedAcademicData.years[0];
     const activeTerm = loadedAcademicData.terms.find((item) => item.academic_year_id === activeYear?.id && item.status === 'active')
       || loadedAcademicData.terms.find((item) => item.academic_year_id === activeYear?.id);
-    const todayKey = new Date().toISOString().slice(0, 10);
-    const initialDay = new Date(`${todayKey}T12:00:00`).getDay() || 7;
+    const campusToday = campusParts(new Date(), safeTimeZone(policyResult.data?.timezone || DEFAULT_CAMPUS_TIMEZONE));
+    const initialDay = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(campusToday.weekday) + 1;
     if (academicResult.available && activeTerm) await queryTimetable(activeTerm.id, initialDay);
     else {
       setTimetableEntries([]);

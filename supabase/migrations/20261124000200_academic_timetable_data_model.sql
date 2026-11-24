@@ -355,6 +355,7 @@ CREATE POLICY timetable_completeness_authenticated_read ON public.timetable_comp
 CREATE POLICY timetable_completeness_admin_manage ON public.timetable_completeness
   FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+REVOKE ALL ON TABLE public.timetable_entries FROM PUBLIC, anon;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.timetable_entries TO authenticated;
 CREATE POLICY timetable_entries_admin_manage ON public.timetable_entries
   FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
