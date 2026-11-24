@@ -1,22 +1,35 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './CampusAvailability.css';
-import { deriveAcademicStatus, derivePeriodAvailability, isOperationallyAvailable } from '../domain/timetable';
+import { derivePeriodAvailability, isOperationallyAvailable } from '../domain/timetable';
+import { academicRoomStatus, campusLocalToUtc, resolvePeriodRange } from '../domain/roomAvailability';
 
-const TODAY = new Date().toISOString().slice(0, 10);
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const weekdayForDate = (value) => new Date(`${value}T12:00:00Z`).getUTCDay();
 const complete = (status) => ['complete', 'published'].includes(status);
 const shortTime = (value) => String(value || '').slice(0, 5);
 
-export default function CampusAvailability({ view, rooms = [], entries = [], academicData = {}, academicSchema = {}, timetableLoading = false, timetableSelection, onScheduleQuery, onReserve, onViewChange }) {
-  const [date, setDate] = useState(TODAY);
+export default function CampusAvailability({ view, rooms = [], entries = [], academicData = {}, academicSchema = {}, timetableLoading = false, timetableSelection, timeZone = 'Asia/Kolkata', onScheduleQuery, onReservationSearch, onReserve, onViewChange }) {
+  const initialYear = (academicData.years || []).find((item) => item.status === 'active') || (academicData.years || [])[0];
+  const initialAvailabilityTerm = (academicData.terms || []).find((item) => item.academic_year_id === initialYear?.id && item.status === 'active') || (academicData.terms || []).find((item) => item.academic_year_id === initialYear?.id);
+  const firstPeriod = (academicData.periods || []).filter((item) => item.is_active && item.term_id === initialAvailabilityTerm?.id).slice().sort((a, b) => Number(a.period_number) - Number(b.period_number))[0]?.period_number;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const [date, setDate] = useState(today);
   const [periodNumber, setPeriodNumber] = useState('');
+  const [startPeriodNumber, setStartPeriodNumber] = useState(firstPeriod ? String(firstPeriod) : '');
+  const [endPeriodNumber, setEndPeriodNumber] = useState(firstPeriod ? String(firstPeriod) : '');
   const [building, setBuilding] = useState('');
   const [floor, setFloor] = useState('');
+  const [category, setCategory] = useState(view === 'labs' ? 'laboratory' : 'classroom');
+  const [minimumCapacity, setMinimumCapacity] = useState('');
+  const [equipment, setEquipment] = useState('');
+  const [reservationResults, setReservationResults] = useState(null);
+  const [reservationLoading, setReservationLoading] = useState(false);
+  const [reservationError, setReservationError] = useState('');
+  const reservationRequest = useRef(0);
   const [facultyId, setFacultyId] = useState('');
   const [sectionId, setSectionId] = useState('');
   const [yearIdInput, setYearIdInput] = useState('');
   const [termIdInput, setTermIdInput] = useState('');
-  const [notice, setNotice] = useState('');
   const years = academicData.years || [];
   const terms = academicData.terms || [];
   const selectedYearId = yearIdInput || terms.find((item) => item.id === termIdInput)?.academic_year_id || years.find((item) => item.status === 'active')?.id || years[0]?.id || '';
@@ -25,13 +38,13 @@ export default function CampusAvailability({ view, rooms = [], entries = [], aca
   const termId = yearTerms.some((item) => item.id === termIdInput) ? termIdInput : initialTerm?.id || '';
   const term = terms.find((item) => item.id === termId) || null;
   const periods = (academicData.periods || []).filter((item) => item.term_id === termId && item.is_active).slice().sort((a, b) => Number(a.period_number) - Number(b.period_number));
-  const weekday = new Date(`${date}T12:00:00`).getDay();
+  const weekday = weekdayForDate(date);
   const timetableDay = weekday === 0 ? 7 : weekday;
   const queryMatches = timetableSelection ? timetableSelection.termId === termId && Number(timetableSelection.dayOfWeek) === timetableDay : !onScheduleQuery;
   const scheduleUnavailable = timetableLoading || !queryMatches || Boolean(academicSchema.timetableError || academicSchema.academicDataError || academicSchema.roomDataError);
   const requestSchedule = (nextTermId, nextDate = date) => {
     if (!nextTermId || !onScheduleQuery) return;
-    const nextWeekday = new Date(`${nextDate}T12:00:00`).getDay() || 7;
+    const nextWeekday = weekdayForDate(nextDate) || 7;
     onScheduleQuery(nextTermId, nextWeekday);
   };
   const dayEntries = useMemo(() => queryMatches ? entries.filter((entry) => entry.term_id === termId && entry.is_active !== false && Number(entry.day_of_week) === timetableDay) : [], [queryMatches, entries, termId, timetableDay]);
@@ -44,20 +57,47 @@ export default function CampusAvailability({ view, rooms = [], entries = [], aca
   const roomView = view === 'classrooms' || view === 'labs';
   const facultyView = view === 'faculty';
   const studentView = view === 'students';
-  const roomCategory = view === 'labs' ? 'laboratory' : 'classroom';
-  const categorizedRooms = rooms.filter((room) => room.category === roomCategory);
+  const roomCategory = category;
+  const categorizedRooms = useMemo(() => rooms.filter((room) => room.is_active !== false && room.operational_status !== 'retired' && (roomCategory === 'all' || (roomCategory === 'unclassified' ? !room.category : room.category === roomCategory))), [rooms, roomCategory]);
   const filteredPeriods = periods.filter((period) => !periodNumber || Number(period.period_number) === Number(periodNumber));
+  const interval = resolvePeriodRange(periods, startPeriodNumber, endPeriodNumber);
+  const intervalStart = interval?.start;
+  const intervalEnd = interval?.end;
+  const resolvedStart = interval && campusLocalToUtc(date, intervalStart, timeZone);
+  const resolvedEnd = interval && campusLocalToUtc(date, intervalEnd, timeZone);
+  const requestedStart = resolvedStart?.toISOString() || '';
+  const requestedEnd = resolvedEnd?.toISOString() || '';
+  const intervalValid = Boolean(dateInTerm && resolvedStart && resolvedEnd && resolvedEnd > resolvedStart);
   const selectedScopeStatus = studentView ? sectionStatus : institutionStatus;
   const facultyProfiles = academicData.facultyProfiles || [];
   const visibleFaculty = facultyProfiles.length ? facultyProfiles : [...new Map(dayEntries.filter((entry) => entry.faculty_id).map((entry) => [entry.faculty_id, { id: entry.faculty_id, display_name: entry.faculty_id }])).values()];
-  const roomRows = useMemo(() => categorizedRooms.filter((room) => (!building || room.building === building) && (!floor || String(room.floor) === String(floor))).map((room) => {
-    const rows = derivePeriodAvailability(filteredPeriods, dayEntries, { scopeStatus: institutionStatus, matches: (entry) => entry.room_id === room.id });
-    const assignments = rows.flatMap((row) => row.assignments);
-    const status = deriveAcademicStatus(assignments, institutionStatus);
-    return { room, status, assignments };
-  }), [categorizedRooms, building, floor, filteredPeriods, dayEntries, institutionStatus]);
+  const roomRows = useMemo(() => categorizedRooms.filter((room) => (!building || room.building === building) && (!floor || String(room.floor) === String(floor)) && (!minimumCapacity || Number(room.capacity) >= Number(minimumCapacity)) && (!equipment || (room.equipment || []).includes(equipment))).map((room) => {
+    const result = intervalStart && intervalEnd ? academicRoomStatus(room.id, intervalStart, intervalEnd, dayEntries, institutionStatus) : { status: 'unknown', assignments: [] };
+    return { room, status: result.status, assignments: result.assignments };
+  }), [categorizedRooms, building, floor, minimumCapacity, equipment, intervalStart, intervalEnd, dayEntries, institutionStatus]);
   const buildings = [...new Set(categorizedRooms.map((room) => room.building).filter(Boolean))].sort();
-  const floors = [...new Set(categorizedRooms.filter((room) => !building || room.building === building).map((room) => room.floor))].sort((a, b) => Number(a) - Number(b));
+  const floors = [...new Set(categorizedRooms.filter((room) => !building || room.building === building).map((room) => room.floor).filter((value) => value !== null && value !== undefined))].sort((a, b) => Number(a) - Number(b));
+  const equipmentOptions = [...new Set(categorizedRooms.flatMap((room) => room.equipment || []))].sort();
+  const reservationOptions = useMemo(() => ({ building: building || null, minCapacity: Number(minimumCapacity) || 0, equipment: equipment || null }), [building, minimumCapacity, equipment]);
+  useEffect(() => setCategory(view === 'labs' ? 'laboratory' : 'classroom'), [view]);
+  useEffect(() => {
+    const requestId = ++reservationRequest.current;
+    setReservationResults(null);
+    setReservationError('');
+    if (!roomView || !intervalValid || !onReservationSearch || scheduleUnavailable || !roomRows.length) { setReservationLoading(false); return undefined; }
+    setReservationLoading(true);
+    Promise.resolve().then(() => onReservationSearch(requestedStart, requestedEnd, reservationOptions)).then((result) => {
+      if (requestId !== reservationRequest.current) return;
+      if (result?.error) setReservationError(result.error);
+      else setReservationResults(Object.fromEntries((result?.data || []).map((row) => [row.room_id, row])));
+      setReservationLoading(false);
+    }).catch(() => {
+      if (requestId !== reservationRequest.current) return;
+      setReservationError('Reservation availability could not be loaded.');
+      setReservationLoading(false);
+    });
+    return () => { reservationRequest.current += 1; };
+  }, [roomView, intervalValid, requestedStart, requestedEnd, onReservationSearch, scheduleUnavailable, reservationOptions, roomRows]);
 
   if (!academicSchema.available) return <section className="page-content campus-availability"><AvailabilityHeader view={view} onViewChange={onViewChange} /><div className="availability-empty" role="status"><strong>{academicSchema.schemaMissing ? 'Academic availability needs the academic database migration.' : 'Academic availability is not available.'}</strong><p>{academicSchema.error || 'Academic schedule data could not be loaded. Empty records are never treated as proof of availability.'}</p></div></section>;
 
@@ -67,8 +107,9 @@ export default function CampusAvailability({ view, rooms = [], entries = [], aca
       <label>Academic year<select value={selectedYearId} onChange={(event) => { const nextYearId = event.target.value; const options = terms.filter((item) => item.academic_year_id === nextYearId); const nextTerm = options.find((item) => item.status === 'active') || options[0]; setYearIdInput(nextYearId); setTermIdInput(''); setPeriodNumber(''); setSectionId(''); requestSchedule(nextTerm?.id); }}><option value="">Choose a year</option>{years.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}</select></label>
       <label>Term<select value={termId} onChange={(event) => { setTermIdInput(event.target.value); setPeriodNumber(''); setSectionId(''); requestSchedule(event.target.value); }}><option value="">Choose a term</option>{yearTerms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>Day<input type="date" value={date} min={term?.starts_on} max={term?.ends_on} onChange={(event) => { setDate(event.target.value); requestSchedule(termId, event.target.value); }} /></label>
-      {(roomView || facultyView) && <label>Period<select value={periodNumber} onChange={(event) => setPeriodNumber(event.target.value)}><option value="">All periods</option>{periods.map((period) => <option key={period.id} value={period.period_number}>{period.display_name} · {shortTime(period.starts_at)}–{shortTime(period.ends_at)}</option>)}</select></label>}
-      {roomView && <><label>Building<select value={building} onChange={(event) => { setBuilding(event.target.value); setFloor(''); }}><option value="">All buildings</option>{buildings.map((item) => <option key={item}>{item}</option>)}</select></label><label>Floor<select value={floor} onChange={(event) => setFloor(event.target.value)}><option value="">All floors</option>{floors.map((item) => <option key={String(item)} value={item}>{item}</option>)}</select></label></>}
+      {roomView && <><label>Start period<select aria-label="Start period" value={startPeriodNumber} onChange={(event) => { setStartPeriodNumber(event.target.value); if (!endPeriodNumber || Number(event.target.value) > Number(endPeriodNumber)) setEndPeriodNumber(event.target.value); }}><option value="">Choose start</option>{periods.map((period) => <option key={period.id} value={period.period_number}>{period.display_name} · {shortTime(period.starts_at)}–{shortTime(period.ends_at)}</option>)}</select></label><label>End period<select aria-label="End period" value={endPeriodNumber} onChange={(event) => setEndPeriodNumber(event.target.value)}><option value="">Choose end</option>{periods.map((period) => <option key={period.id} value={period.period_number}>{period.display_name} · {shortTime(period.starts_at)}–{shortTime(period.ends_at)}</option>)}</select></label></>}
+      {facultyView && <label>Period<select value={periodNumber} onChange={(event) => setPeriodNumber(event.target.value)}><option value="">All periods</option>{periods.map((period) => <option key={period.id} value={period.period_number}>{period.display_name} · {shortTime(period.starts_at)}–{shortTime(period.ends_at)}</option>)}</select></label>}
+      {roomView && <><label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="all">All categories</option><option value="classroom">Classroom</option><option value="laboratory">Laboratory</option><option value="unclassified">Unclassified</option></select></label><label>Building<select value={building} onChange={(event) => { setBuilding(event.target.value); setFloor(''); }}><option value="">All buildings</option>{buildings.map((item) => <option key={item}>{item}</option>)}</select></label><label>Floor<select value={floor} onChange={(event) => setFloor(event.target.value)}><option value="">All floors</option>{floors.map((item) => <option key={String(item)} value={item}>{item}</option>)}</select></label><label>Minimum capacity<input type="number" min="0" value={minimumCapacity} onChange={(event) => setMinimumCapacity(event.target.value)} /></label><label>Equipment<select value={equipment} onChange={(event) => setEquipment(event.target.value)}><option value="">Any equipment</option>{equipmentOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" className="secondary-button" onClick={() => { setStartPeriodNumber(''); setEndPeriodNumber(''); setCategory(view === 'labs' ? 'laboratory' : 'classroom'); setBuilding(''); setFloor(''); setMinimumCapacity(''); setEquipment(''); }}>Clear filters</button></>}
       {facultyView && <label>Faculty member<select value={facultyId} onChange={(event) => setFacultyId(event.target.value)}><option value="">Select faculty</option>{visibleFaculty.map((item) => <option key={item.id} value={item.id}>{item.display_name}{item.staff_identifier ? ` · ${item.staff_identifier}` : ''}</option>)}</select></label>}
       {studentView && <label>Student section<select value={selectedSection?.id || ''} onChange={(event) => setSectionId(event.target.value)}><option value="">Select a section</option>{termSections.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</select></label>}
     </div>
@@ -80,19 +121,25 @@ export default function CampusAvailability({ view, rooms = [], entries = [], aca
     {!term ? <Empty title="No academic term is configured." text="An administrator must configure a year and term before availability can be derived." /> : <>
       <div className="availability-notice" role="status">{years.find((item) => item.id === term.academic_year_id)?.name} · {term.name} · {dateInTerm ? WEEKDAYS[weekday] : 'Selected day is outside this term'} · {scopeLabel(selectedScopeStatus)}</div>
       {!dateInTerm ? <Empty title="No timetable applies to this date." text={`Choose a date inside ${term.starts_on}–${term.ends_on}. Dates outside this term are not shown as free.`} /> : !periods.length ? <Empty title="No canonical periods are configured." text="Configure actual period start and end times for this term." /> : null}
-      {roomView && dateInTerm && periods.length > 0 && !scheduleUnavailable && <>
-        <div className="availability-notice">Academic timetable status is separate from operational status and reservations. Only {roomCategory === 'classroom' ? 'classrooms' : 'laboratories'} are listed; unclassified rooms are excluded.</div>
-        {!categorizedRooms.length ? <Empty title={`No rooms are classified as ${roomCategory === 'classroom' ? 'classrooms' : 'laboratories'}.`} text="Classify rooms in Room management; Northstar does not infer categories." /> : <div className="availability-list">{roomRows.map(({ room, status, assignments }) => {
+      {roomView && dateInTerm && periods.length > 0 && <>
+        <div className="availability-notice">Academic, operational and reservation availability are evaluated separately. The database availability search is authoritative; a search result never guarantees a booking.</div>
+        {interval && <div className="availability-notice" role="status">Requested interval: {interval.start.slice(0, 5)}–{interval.end.slice(0, 5)} · {date}{!intervalValid ? ' · Invalid interval or date' : ''}</div>}
+        {!interval && <Empty title="Choose a valid start and end period." text="Both periods must belong to the selected term, and the start period cannot follow the end period." />}
+        {scheduleUnavailable ? <Empty title="Timetable is not ready for this selection." text="Results from another term or date are not used." /> : reservationLoading ? <div className="availability-empty" role="status"><strong>Checking reservation availability…</strong><p>Previous results are cleared while the selected interval and filters are checked.</p></div> : reservationError ? <div className="availability-empty" role="alert"><strong>Reservation availability could not be loaded.</strong><p>{reservationError}</p></div> : null}
+        {intervalValid && !scheduleUnavailable && !reservationLoading && !reservationError && !categorizedRooms.length ? <Empty title="No active rooms match these filters." text="Unclassified rooms can be included explicitly using the Category filter." /> : intervalValid && !scheduleUnavailable && !reservationLoading && !reservationError && <div className="availability-list">{roomRows.map(({ room, status, assignments }) => {
           const operational = isOperationallyAvailable(room);
+          const reservation = reservationResults?.[room.id];
+          const reservationAvailable = reservation?.availability_status === 'available';
           const assignmentInfo = assignments.map((entry) => `${entry.subject || 'Subject'} · ${termSections.find((section) => section.id === entry.section_id)?.code || 'Section'} · ${facultyProfiles.find((person) => person.id === entry.faculty_id)?.display_name || entry.faculty_id || 'Faculty'}`).join(' / ');
-          const canContinue = status === 'available' && operational;
-          return <article className="availability-room" key={room.id}><div className="availability-room-main"><span className={`availability-indicator ${status !== 'available' || !operational ? 'busy' : ''}`} /><div><strong>{room.code} · {room.name}</strong><p>{room.building || 'Building not set'} · Floor {room.floor ?? '—'} · {room.capacity ?? '—'} seats · {roomCategory}</p><small>{status === 'occupied' ? assignmentInfo : status === 'available' ? 'No class assignment in a complete timetable' : 'No assignment recorded; timetable completeness is not confirmed'}</small></div></div><div className="availability-room-action"><span>{status === 'occupied' ? 'Occupied' : status === 'available' ? 'Academic availability: free' : 'Academic availability: unknown'}<br />Operational: {operational ? 'available' : room.operational_status || 'inactive'}</span>{canContinue && <button className="secondary-button" onClick={() => { setNotice('Academic vacancy is not reservation confirmation. The booking system checks the requested interval, closures, and eligibility.'); onReserve(room, date); }}>Continue to booking</button>}</div></article>;
+          const canContinue = status === 'available' && operational && reservationAvailable;
+          const categoryLabel = room.category || 'Unclassified';
+          const reason = reservation?.reason ? String(reservation.reason).replaceAll('_', ' ') : '';
+          return <article className="availability-room" key={room.id}><div className="availability-room-main"><span className={`availability-indicator ${status !== 'available' || !operational || !reservationAvailable ? 'busy' : ''}`} /><div><strong>{room.code} · {room.name}</strong><p>{room.building || 'Building not set'} · Floor {room.floor ?? '—'} · {room.capacity ?? '—'} seats · {categoryLabel}</p><small>{room.equipment?.length ? `Equipment: ${room.equipment.join(', ')}` : 'No equipment listed'}{status === 'occupied' ? ` · ${assignmentInfo}` : status === 'available' ? ' · No timetable assignment in the complete institutional scope' : ' · Timetable completeness is missing or unfinished'}</small></div></div><div className="availability-room-action"><span>Academic availability: {status === 'occupied' ? 'occupied' : status === 'available' ? 'free' : 'unknown'}<br />Operational: {operational ? 'available' : room.operational_status || 'inactive'}<br />Reservation: {reservationAvailable ? 'available' : reason || 'unavailable'}</span>{canContinue && <button className="secondary-button" onClick={() => onReserve(room, { date, start: interval.start, end: interval.end, startPeriod: interval.startPeriod, startPeriodNumber: interval.startPeriod, endPeriod: interval.endPeriod, endPeriodNumber: interval.endPeriod, duration: interval.endPeriod - interval.startPeriod + 1, mode: 'normal' })}>Continue to booking</button>}</div></article>;
         })}</div>}
       </>}
       {facultyView && dateInTerm && periods.length > 0 && !scheduleUnavailable && (!facultyId ? <Empty title="Select a faculty member." text={facultyProfiles.length ? 'Faculty records are from the academic directory.' : 'Faculty directory records are unavailable; assignments alone cannot enumerate unassigned faculty.'} /> : <div className="availability-list">{derivePeriodAvailability(filteredPeriods, dayEntries, { scopeStatus: institutionStatus, matches: (entry) => entry.faculty_id === facultyId }).map(({ period, entry, status }) => <ScheduleRow key={period.id} period={period} status={status} detail={entry ? `${entry.subject || 'Subject'} · ${termSections.find((section) => section.id === entry.section_id)?.code || 'Section'} · ${rooms.find((room) => room.id === entry.room_id)?.code || 'Room not recorded'}` : ''} emptyText="No faculty assignment in this complete institutional timetable" />)}</div>)}
       {studentView && dateInTerm && periods.length > 0 && !scheduleUnavailable && (!selectedSection ? <Empty title="Select a student section." text="Section free periods require that section's own completeness scope." /> : <div className="availability-list">{derivePeriodAvailability(periods, dayEntries, { scopeStatus: sectionStatus, matches: (entry) => entry.section_id === selectedSection.id }).map(({ period, entry, status }) => <ScheduleRow key={period.id} period={period} status={status} detail={entry ? `${entry.subject || 'Subject'} · ${facultyProfiles.find((person) => person.id === entry.faculty_id)?.display_name || entry.faculty_id || 'Faculty'} · ${rooms.find((room) => room.id === entry.room_id)?.code || 'Room not recorded'}` : ''} emptyText="No class assigned to this section in its complete timetable" />)}</div>)}
     </>}
-    {notice && <p className="availability-notice" role="status">{notice}</p>}
   </section>;
 }
 

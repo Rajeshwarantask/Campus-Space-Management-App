@@ -15,7 +15,7 @@ const formatDate = (value, options, fallback = INVALID_DATE) => { const date = p
 const formatTime = (value, options, fallback = INVALID_DATE) => { const date = parseDate(value); return date ? new Intl.DateTimeFormat(undefined, options).format(date) : fallback; };
 const DEFAULT_CAMPUS_TIMEZONE = 'Asia/Kolkata';
 const safeTimeZone = (value) => { try { new Intl.DateTimeFormat('en-US', { timeZone: value || DEFAULT_CAMPUS_TIMEZONE }); return value || DEFAULT_CAMPUS_TIMEZONE; } catch { return DEFAULT_CAMPUS_TIMEZONE; } };
-const campusLocalToUtc = (date, time, timeZone) => { const candidate = new Date(`${date}T${time}:00Z`); if (!isValidDate(candidate)) return null; const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(candidate).reduce((acc, item) => ({ ...acc, [item.type]: item.value }), {}); const viewed = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute)); const wanted = Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10)), Number(time.slice(0, 2)), Number(time.slice(3, 5))); return new Date(candidate.getTime() + wanted - viewed); };
+const campusLocalToUtc = (date, time, timeZone) => { const match = String(time || '').match(/^(\d{2}):(\d{2})(?::(\d{2}))?$/); if (!match) return null; const seconds = Number(match[3] || 0); const candidate = new Date(`${date}T${match[1]}:${match[2]}:${String(seconds).padStart(2, '0')}Z`); if (!isValidDate(candidate)) return null; const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(candidate).reduce((acc, item) => ({ ...acc, [item.type]: item.value }), {}); const viewed = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute), Number(parts.second)); const wanted = Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10)), Number(match[1]), Number(match[2]), seconds); return new Date(candidate.getTime() + wanted - viewed); };
 const campusParts = (value, timeZone) => new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false }).formatToParts(value).reduce((acc, item) => ({ ...acc, [item.type]: item.value }), {});
 const dateKey = (value) => `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCDate()).padStart(2, '0')}`;
 const shiftDate = (value, days) => { const result = new Date(`${value}T12:00:00Z`); result.setUTCDate(result.getUTCDate() + days); return dateKey(result); };
@@ -60,6 +60,8 @@ function App() {
   const [policy, setPolicy] = useState({ timezone: DEFAULT_CAMPUS_TIMEZONE, operating_days: [1, 2, 3, 4, 5], normal_submission_open_time: '09:00:00', normal_submission_close_time: '14:00:00', normal_horizon_days: 30, eligible_roles: ['event_organizer', 'admin'] });
 
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(''), 3200); return () => clearTimeout(timer); } }, [toast]);
+
+  const searchReservationAvailability = useCallback((startsAt, endsAt, filters) => supabase.rpc('search_room_availability', { p_starts_at: startsAt, p_ends_at: endsAt, p_min_capacity: filters.minCapacity, p_required_equipment: filters.equipment ? [filters.equipment] : [], p_building: filters.building, p_booking_type: 'normal' }), []);
 
   const queryTimetable = useCallback(async (termId, dayOfWeek) => {
     const requestId = ++timetableRequest.current;
@@ -153,7 +155,7 @@ function App() {
 
   async function createBooking(form) {
     const datePattern = /^\d{4}-\d{2}-\d{2}$/;
-    const timePattern = /^\d{2}:\d{2}$/;
+    const timePattern = /^\d{2}:\d{2}(?::\d{2})?$/;
     if (!datePattern.test(form.date || '') || !timePattern.test(form.start || '') || !timePattern.test(form.end || '')) return setToast('Choose a valid date and time interval.');
     const campusZone = safeTimeZone(policy.timezone || DEFAULT_CAMPUS_TIMEZONE);
     const start = campusLocalToUtc(form.date, form.start, campusZone);
@@ -205,6 +207,7 @@ function App() {
 
   const activeBookings = bookings.filter((b) => b.status !== 'cancelled');
   const isAdmin = role === 'admin';
+  const openAvailabilityReservation = (room, selection) => { setSelectedRoom(room); setBookingSelection(selection); setBookingMode('normal'); setShowBooking(true); };
   const openBookingWorkspace = (room = null, date = null) => { setSelectedRoom(room); setPreferredBookingDate(date); setBookingSelection(null); setBookingMode('normal'); setPage('book'); };
   const visibleNav = isAdmin ? [...nav, ['academic', 'Academic management', '▦'], ['admin', 'Admin console', '⚙'], ['rooms-admin', 'Room management', '⌂'], ['users', 'Users & permissions', '◎']] : nav;
   return <div className="app-shell">
@@ -219,7 +222,7 @@ function App() {
       {page === 'book' && <BookingWorkspace rooms={rooms} bookings={activeBookings} timetableEntries={timetableEntries} closures={closures} allocations={allocations} role={role} policy={policy} mode={bookingMode} setMode={setBookingMode} preferredRoom={selectedRoom} initialDate={preferredBookingDate} onReserve={(room, selection) => { setSelectedRoom(room); setBookingSelection(selection); setShowBooking(true); }} />}
       {page === 'overview' && <Overview rooms={rooms} bookings={activeBookings} onReserve={openBookingWorkspace} onCheckIn={checkIn} />}
       {page === 'rooms' && <Rooms rooms={rooms} bookings={activeBookings} onReserve={openBookingWorkspace} onNavigate={setPage} />}
-      {['classrooms', 'labs', 'faculty', 'students'].includes(page) && <CampusAvailability view={page} rooms={availabilityRooms} entries={timetableEntries} academicData={academicData} academicSchema={academicSchema} timetableLoading={timetableLoading} timetableSelection={timetableSelection} onScheduleQuery={queryTimetable} onReserve={openBookingWorkspace} onViewChange={setPage} />}
+      {['classrooms', 'labs', 'faculty', 'students'].includes(page) && <CampusAvailability view={page} rooms={availabilityRooms} entries={timetableEntries} academicData={academicData} academicSchema={academicSchema} timetableLoading={timetableLoading} timetableSelection={timetableSelection} timeZone={policy.timezone} onScheduleQuery={queryTimetable} onReservationSearch={searchReservationAvailability} onReserve={openAvailabilityReservation} onViewChange={setPage} />}
       {page === 'bookings' && <Bookings bookings={bookings} rooms={rooms} userId={session.user.id} loading={bookingsLoading} error={bookingsError} onRefresh={loadData} onCancel={cancelBooking} onCheckIn={checkIn} />}
       {page === 'timetable' && <AcademicTimetableView rooms={rooms} bookings={activeBookings} entries={timetableEntries} academicData={academicData} academicSchema={academicSchema} />}
       {page === 'analytics' && <Analytics rooms={rooms} bookings={activeBookings} entries={timetableEntries} closures={closures} />}
@@ -364,7 +367,7 @@ function BookingModal({ rooms, selectedRoom, selection, initialCategory = 'norma
 function FocusedBookingModal({ room, selection, onClose, onSubmit }) {
   const [form, setForm] = useState({ title: '', purpose: '' });
   const [error, setError] = useState('');
-  const startLabel = `Period ${selection.startPeriod + 1} · ${selection.start}–${selection.end}`;
+  const startLabel = `Period ${selection.startPeriodNumber || selection.startPeriod + 1} · ${selection.start}–${selection.end}`;
   const durationLabel = `${selection.duration} period${selection.duration === 1 ? '' : 's'}`;
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className="booking-modal focused-modal" onSubmit={(event) => { event.preventDefault(); if (!form.title.trim() || !form.purpose.trim()) return setError('Add a title and purpose before confirming.'); onSubmit({ ...form, room: room.id, date: selection.date, start: selection.start, end: selection.end, category: selection.mode === 'priority' ? 'event' : 'normal' }); }}><div className="modal-heading"><div><p className="eyebrow">CONFIRM RESERVATION</p><h2>{room.code} · {room.name}</h2></div><button type="button" className="close-button" onClick={onClose}>×</button></div><div className="confirmation-grid"><div><span>Booking day</span><strong>{selection.date}</strong></div><div><span>Schedule</span><strong>{startLabel}</strong><small>Duration: {durationLabel}</small></div></div><p className="muted">{room.building} · Floor {room.floor} · {room.capacity} seats · {room.equipment?.join(' · ') || 'Flexible space'}</p><label>What is this for?<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="e.g. Design review" /></label><label>Purpose / reason<textarea required rows="3" value={form.purpose} onChange={(event) => setForm({ ...form, purpose: event.target.value })} placeholder="Give your teammates context..." /></label>{error && <div className="form-error">{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Back</button><button className="primary-button" type="submit">Confirm {selection.mode === 'priority' ? 'priority' : 'normal'} booking →</button></div></form></div>;
 }

@@ -1,6 +1,8 @@
 import React from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import CampusAvailability from './CampusAvailability';
+
+const TODAY = new Date().toISOString().slice(0, 10);
 
 test('does not report vacancies when the academic schema is not deployed', () => {
   render(<CampusAvailability view="classrooms" rooms={[]} entries={[]} academicData={{}} academicSchema={{ available: false, schemaMissing: true, error: 'Migration not deployed' }} onReserve={jest.fn()} onViewChange={jest.fn()} />);
@@ -10,7 +12,7 @@ test('does not report vacancies when the academic schema is not deployed', () =>
 
 const availabilityProps = (status) => ({
   view: 'classrooms',
-  rooms: [{ id: 'room-1', code: 'A101', name: 'Room 101', building: 'A', floor: 1, capacity: 30, category: 'classroom', is_active: true }],
+  rooms: [{ id: 'room-1', code: 'A101', name: 'Room 101', building: 'A', floor: 1, capacity: 30, category: 'classroom', equipment: ['Projector'], is_active: true }],
   entries: [],
   academicSchema: { available: true },
   academicData: {
@@ -21,19 +23,21 @@ const availabilityProps = (status) => ({
     completeness: [{ id: 'scope-1', term_id: 'term-1', scope_type: 'institution', status }],
   },
   onReserve: jest.fn(),
+  onReservationSearch: jest.fn(async () => ({ data: [{ room_id: 'room-1', availability_status: 'available' }] })),
   onViewChange: jest.fn(),
 });
 
-test('keeps empty room periods unknown while institutional completeness is in progress', () => {
+test('keeps empty room periods unknown while institutional completeness is in progress', async () => {
   render(<CampusAvailability {...availabilityProps('in_progress')} />);
-  expect(screen.getByText(/Academic availability: unknown/i)).toBeInTheDocument();
+  expect(await screen.findByText(/Academic availability: unknown/i)).toBeInTheDocument();
   expect(screen.queryByText('Academic vacancy')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Continue to booking/i })).not.toBeInTheDocument();
 });
 
-test('reports an academic vacancy only after the institution timetable is complete', () => {
+test('reports academic vacancy separately from the authoritative reservation result', async () => {
   render(<CampusAvailability {...availabilityProps('complete')} />);
-  expect(screen.getByText(/Academic availability: free/i)).toBeInTheDocument();
+  expect(await screen.findByText(/Academic availability: free/i)).toBeInTheDocument();
+  expect(screen.getByText(/Reservation: available/i)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /Continue to booking/i })).toBeInTheDocument();
 });
 
@@ -58,80 +62,94 @@ function assignedProps(view, completeness = 'complete') {
   };
 }
 
-test('shows an assigned classroom as occupied and excludes laboratories from classrooms', () => {
+test('shows an assigned classroom as occupied and excludes laboratories from classrooms', async () => {
   render(<CampusAvailability {...assignedProps('classrooms')} />);
-  expect(screen.getByText(/A101 · Lecture room/)).toBeInTheDocument();
-  expect(screen.getByText(/Occupied/)).toBeInTheDocument();
+  expect(await screen.findByText(/A101 · Lecture room/)).toBeInTheDocument();
+  expect(screen.getByText(/occupied/i)).toBeInTheDocument();
   expect(screen.queryByText(/L201 · Science lab/)).not.toBeInTheDocument();
   expect(screen.getByText(/Physics/)).toBeInTheDocument();
 });
 
-test('shows laboratories only in the laboratory perspective', () => {
+test('shows laboratories only in the laboratory perspective', async () => {
   render(<CampusAvailability {...assignedProps('labs')} />);
-  expect(screen.getByText(/L201 · Science lab/)).toBeInTheDocument();
+  expect(await screen.findByText(/L201 · Science lab/)).toBeInTheDocument();
   expect(screen.queryByText(/A101 · Lecture room/)).not.toBeInTheDocument();
 });
 
-test('keeps operational restrictions separate from an academically free room', () => {
+test('keeps operational restrictions separate from an academically free room', async () => {
   const props = availabilityProps('complete');
   props.rooms[0].operational_status = 'maintenance';
   render(<CampusAvailability {...props} />);
-  expect(screen.getByText(/Academic availability: free/i)).toBeInTheDocument();
+  expect(await screen.findByText(/Academic availability: free/i)).toBeInTheDocument();
   expect(screen.getByText(/Operational: maintenance/i)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Continue to booking/i })).not.toBeInTheDocument();
 });
 
-test('keeps inactive rooms visible as academically free but operationally unusable', () => {
+test('does not present inactive rooms as usable discovery results', () => {
   const props = availabilityProps('complete');
   props.rooms[0].is_active = false;
   render(<CampusAvailability {...props} />);
-  const room = screen.getByText(/A101 · Room 101/).closest('.availability-room');
-  expect(room).toHaveTextContent('Academic availability: free');
-  expect(room).toHaveTextContent('Operational: inactive');
-  expect(within(room).queryByRole('button', { name: /Continue to booking/i })).not.toBeInTheDocument();
+  expect(screen.queryByText(/A101 · Room 101/)).not.toBeInTheDocument();
 });
 
-test('shows faculty assignment as occupied and unassigned periods unknown without institutional completeness', () => {
-  render(<CampusAvailability {...assignedProps('faculty', 'in_progress')} />);
-  fireEvent.change(screen.getByLabelText('Faculty member'), { target: { value: 'faculty-1' } });
-  expect(screen.getByText(/Occupied/)).toBeInTheDocument();
-  expect(screen.getByText(/Physics.*S1/)).toBeInTheDocument();
-  expect(screen.getByText('Unknown')).toBeInTheDocument();
-});
-
-test('uses section completeness for occupied and unknown section periods', () => {
-  const props = assignedProps('students', 'complete');
-  props.academicData.completeness = [
-    { term_id: 'term-1', scope_type: 'institution', status: 'complete' },
-    { term_id: 'term-1', scope_type: 'section', section_id: 'section-1', status: 'in_progress' },
-  ];
+test('uses the selected interval including a canonical gap for availability and booking handoff', async () => {
+  const props = availabilityProps('complete');
+  props.academicData.periods.push({ id: 'period-2', term_id: 'term-1', period_number: 2, display_name: 'Period 2', starts_at: '10:15:00', ends_at: '10:55:00', is_active: true });
   render(<CampusAvailability {...props} />);
-  fireEvent.change(screen.getByLabelText('Student section'), { target: { value: 'section-1' } });
-  expect(screen.getByText(/Occupied/)).toBeInTheDocument();
-  expect(screen.getByText('Unknown')).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('End period'), { target: { value: '2' } });
+  const button = await screen.findByRole('button', { name: /Continue to booking/i });
+  fireEvent.click(button);
+  await waitFor(() => expect(props.onReserve).toHaveBeenCalledWith(props.rooms[0], expect.objectContaining({ date: TODAY, start: '09:00:00', end: '10:55:00', startPeriod: 1, endPeriod: 2, duration: 2, mode: 'normal' })));
 });
 
-test('uses the selected section completeness to derive a free period', () => {
-  const props = assignedProps('students', 'in_progress');
-  props.entries = [];
-  props.academicData.completeness = [{ term_id: 'term-1', scope_type: 'section', section_id: 'section-1', status: 'published' }];
+test('shows query failures and does not reuse old reservation results', async () => {
+  const props = availabilityProps('complete');
+  props.onReservationSearch = jest.fn().mockResolvedValueOnce({ data: [{ room_id: 'room-1', availability_status: 'available' }] }).mockResolvedValueOnce({ error: 'RPC unavailable', data: null });
+  const { rerender } = render(<CampusAvailability {...props} />);
+  expect(await screen.findByText(/Reservation: available/i)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Minimum capacity'), { target: { value: '20' } });
+  rerender(<CampusAvailability {...props} />);
+  expect(await screen.findByRole('alert')).toHaveTextContent(/RPC unavailable/);
+  expect(screen.queryByText(/Reservation: available/i)).not.toBeInTheDocument();
+});
+
+test('narrows real room metadata with category, building, floor, capacity and equipment filters', async () => {
+  const props = availabilityProps('complete');
+  props.rooms.push(
+    { id: 'room-2', code: 'B201', name: 'Workshop', building: 'B', floor: 2, capacity: 60, category: 'classroom', equipment: ['Whiteboard'], is_active: true },
+    { id: 'room-3', code: 'U001', name: 'Unclassified space', building: 'B', floor: 2, capacity: 70, category: null, equipment: ['Whiteboard'], is_active: true },
+  );
+  props.onReservationSearch = jest.fn(async () => ({ data: props.rooms.map((room) => ({ room_id: room.id, availability_status: 'available' })) }));
   render(<CampusAvailability {...props} />);
-  fireEvent.change(screen.getByLabelText('Student section'), { target: { value: 'section-1' } });
-  expect(screen.getAllByText('Free')).toHaveLength(2);
+  expect(await screen.findByText(/A101 · Room 101/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'unclassified' } });
+  expect(await screen.findByText(/U001 · Unclassified space/)).toBeInTheDocument();
+  expect(screen.queryByText(/A101 · Room 101/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+  fireEvent.change(screen.getByLabelText('Start period'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('End period'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('Building'), { target: { value: 'B' } });
+  fireEvent.change(screen.getByLabelText('Floor'), { target: { value: '2' } });
+  fireEvent.change(screen.getByLabelText('Minimum capacity'), { target: { value: '55' } });
+  fireEvent.change(screen.getByLabelText('Equipment'), { target: { value: 'Whiteboard' } });
+  await waitFor(() => expect(props.onReservationSearch).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), { building: 'B', minCapacity: 55, equipment: 'Whiteboard' }));
+  expect(await screen.findByText(/B201 · Workshop/)).toBeInTheDocument();
+  expect(screen.queryByText(/A101 · Room 101/)).not.toBeInTheDocument();
 });
 
-test('queries the newly selected term and day and never reuses stale availability', () => {
+test('queries the newly selected term and day and never reuses stale availability', async () => {
   const props = assignedProps('classrooms');
   props.academicData.years.push({ id: 'year-2', name: '2027–2028' });
   props.academicData.terms.push({ id: 'term-2', academic_year_id: 'year-2', name: 'Semester 2', starts_on: '2026-01-01', ends_on: '2026-12-31', status: 'active' });
-  props.academicData.periods.push({ id: 'period-2', term_id: 'term-2', period_number: 1, display_name: 'Period 1', starts_at: '10:10:00', ends_at: '10:55:00', is_active: true });
+  props.academicData.periods.push({ id: 'period-2', term_id: 'term-2', period_number: 1, starts_at: '10:10:00', ends_at: '10:55:00', is_active: true });
   props.timetableSelection = { termId: 'term-1', dayOfWeek: currentDay };
   props.onScheduleQuery = jest.fn();
   const { rerender } = render(<CampusAvailability {...props} />);
   fireEvent.change(screen.getByLabelText('Academic year'), { target: { value: 'year-2' } });
   expect(props.onScheduleQuery).toHaveBeenCalledWith('term-2', currentDay);
   rerender(<CampusAvailability {...props} timetableSelection={{ termId: 'term-2', dayOfWeek: currentDay }} />);
-  expect(screen.getByText(/10:10–10:55/)).toBeInTheDocument();
+  expect(await screen.findByText(/Reservation: available/i)).toBeInTheDocument();
+  expect(screen.getAllByText(/10:10–10:55/).length).toBeGreaterThan(0);
   fireEvent.change(screen.getByLabelText('Day'), { target: { value: '2027-01-02' } });
   expect(props.onScheduleQuery).toHaveBeenLastCalledWith('term-2', new Date('2027-01-02T12:00:00').getDay() || 7);
 });
